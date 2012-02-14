@@ -115,6 +115,7 @@
 {% endblock %}
 
 {% block javascripts %}
+    <script type="text/javascript" src="{{ asset('bundles/salvapdfjs/js/compatibility.js') }}"></script>
     <script type="text/javascript" src="{{ asset('bundles/salvapdfjs/js/pdf.js') }}"></script>
     <script type="text/javascript">PDFJS.workerSrc = "{{ asset('bundles/salvapdfjs/js/pdf.js') }}";</script>
     <script type="text/javascript" src="{{ asset('bundles/salvapdfjs/js/viewer.js') }}"></script>
