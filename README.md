@@ -61,6 +61,7 @@ public function registerBundles()
 <?php
 
 $file = '/uploads/yourpdf.pdf'; //relative to your website root directory
+
 return $this->get('salva_pdf_js.controller')->render($file);
 
 ```
