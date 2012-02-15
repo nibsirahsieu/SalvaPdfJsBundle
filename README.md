@@ -8,7 +8,7 @@ This bundle provides a simple integration of the "[PDF.JS library](https://githu
 ### Step 1: Installation using the `bin/vendors.php` method
 
 If you're using the `bin/vendors.php` method to manage your vendor libraries,
-add the following entries to the `deps` file at the root of your project file:
+add the following lines to the `deps` file at the root of your project file:
 
 ```
 [SalvaPdfJsBundle]
@@ -24,7 +24,7 @@ $ ./bin/vendors install
 
 ### Step2: Configure the autoloader
 
-Add the following entries to your autoloader:
+Add the following entry to your autoloader:
 
 ``` php
 <?php
