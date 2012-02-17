@@ -7,7 +7,7 @@ var PDFJS = {};
   // Use strict in our context only - users might not want it
   'use strict';
 
-  PDFJS.build = '38a6cd6';
+  PDFJS.build = '1b0bf24';
 
   // Files are inserted below - see Makefile
   /* PDFJSSCRIPT_INCLUDE_ALL */
@@ -70,6 +70,7 @@ function getPdf(arg, callback) {
   xhr.send(null);
 }
 globalScope.PDFJS.getPdf = getPdf;
+globalScope.PDFJS.pdfBug = false;
 
 var Page = (function PageClosure() {
   function Page(xref, pageNumber, pageDict, ref) {
@@ -117,25 +118,35 @@ var Page = (function PageClosure() {
       return shadow(this, 'mediaBox', obj);
     },
     get view() {
-      var obj = this.inheritPageProp('CropBox');
+      var cropBox = this.inheritPageProp('CropBox');
       var view = {
         x: 0,
         y: 0,
         width: this.width,
         height: this.height
       };
+      if (!isArray(cropBox) || cropBox.length !== 4)
+        return shadow(this, 'view', view);
+
       var mediaBox = this.mediaBox;
       var offsetX = mediaBox[0], offsetY = mediaBox[1];
-      if (isArray(obj) && obj.length == 4) {
-        var tl = this.rotatePoint(obj[0] - offsetX, obj[1] - offsetY);
-        var br = this.rotatePoint(obj[2] - offsetX, obj[3] - offsetY);
-        view.x = Math.min(tl.x, br.x);
-        view.y = Math.min(tl.y, br.y);
-        view.width = Math.abs(tl.x - br.x);
-        view.height = Math.abs(tl.y - br.y);
-      }
 
-      return shadow(this, 'cropBox', view);
+      // From the spec, 6th ed., p.963:
+      // "The crop, bleed, trim, and art boxes should not ordinarily
+      // extend beyond the boundaries of the media box. If they do, they are
+      // effectively reduced to their intersection with the media box."
+      cropBox = Util.intersect(cropBox, mediaBox);
+      if (!cropBox)
+        return shadow(this, 'view', view);
+
+      var tl = this.rotatePoint(cropBox[0] - offsetX, cropBox[1] - offsetY);
+      var br = this.rotatePoint(cropBox[2] - offsetX, cropBox[3] - offsetY);
+      view.x = Math.min(tl.x, br.x);
+      view.y = Math.min(tl.y, br.y);
+      view.width = Math.abs(tl.x - br.x);
+      view.height = Math.abs(tl.y - br.y);
+
+      return shadow(this, 'view', view);
     },
     get annotations() {
       return shadow(this, 'annotations', this.inheritPageProp('Annots'));
@@ -257,10 +268,16 @@ var Page = (function PageClosure() {
       var startIdx = 0;
       var length = this.IRQueue.fnArray.length;
       var IRQueue = this.IRQueue;
+      var stepper = null;
+      if (PDFJS.pdfBug && StepperManager.enabled) {
+        stepper = StepperManager.create(this.pageNumber);
+        stepper.init(IRQueue);
+        stepper.nextBreakPoint = stepper.getNextBreakPoint();
+      }
 
       var self = this;
       function next() {
-        startIdx = gfx.executeIRQueue(IRQueue, startIdx, next);
+        startIdx = gfx.executeIRQueue(IRQueue, startIdx, next, stepper);
         if (startIdx == length) {
           self.stats.render = Date.now();
           gfx.endDrawing();
@@ -966,6 +983,62 @@ var Util = (function UtilClosure() {
     ];
   }
 
+  // Normalize rectangle rect=[x1, y1, x2, y2] so that (x1,y1) < (x2,y2)
+  // For coordinate systems whose origin lies in the bottom-left, this
+  // means normalization to (BL,TR) ordering. For systems with origin in the
+  // top-left, this means (TL,BR) ordering.
+  Util.normalizeRect = function normalizeRect(rect) {
+    var r = rect.slice(0); // clone rect
+    if (rect[0] > rect[2]) {
+      r[0] = rect[2];
+      r[2] = rect[0];
+    }
+    if (rect[1] > rect[3]) {
+      r[1] = rect[3];
+      r[3] = rect[1];
+    }
+    return r;
+  }
+
+  // Returns a rectangle [x1, y1, x2, y2] corresponding to the
+  // intersection of rect1 and rect2. If no intersection, returns 'false'
+  // The rectangle coordinates of rect1, rect2 should be [x1, y1, x2, y2]
+  Util.intersect = function intersect(rect1, rect2) {
+    function compare(a, b) {
+      return a - b;
+    };
+
+    // Order points along the axes
+    var orderedX = [rect1[0], rect1[2], rect2[0], rect2[2]].sort(compare),
+        orderedY = [rect1[1], rect1[3], rect2[1], rect2[3]].sort(compare),
+        result = [];
+
+    rect1 = Util.normalizeRect(rect1);
+    rect2 = Util.normalizeRect(rect2);
+
+    // X: first and second points belong to different rectangles?
+    if ((orderedX[0] === rect1[0] && orderedX[1] === rect2[0]) ||
+        (orderedX[0] === rect2[0] && orderedX[1] === rect1[0])) {
+      // Intersection must be between second and third points
+      result[0] = orderedX[1];
+      result[2] = orderedX[2];
+    } else {
+      return false;
+    }
+
+    // Y: first and second points belong to different rectangles?
+    if ((orderedY[0] === rect1[1] && orderedY[1] === rect2[1]) ||
+        (orderedY[0] === rect2[1] && orderedY[1] === rect1[1])) {
+      // Intersection must be between second and third points
+      result[1] = orderedY[1];
+      result[3] = orderedY[2];
+    } else {
+      return false;
+    }
+
+    return result;
+  }
+
   Util.sign = function sign(num) {
     return num < 0 ? -1 : 1;
   };
@@ -1234,11 +1307,15 @@ var TextRenderingMode = {
   ADD_TO_PATH: 7
 };
 
+// Minimal font size that would be used during canvas fillText operations.
+var MIN_FONT_SIZE = 1;
+
 var CanvasExtraState = (function CanvasExtraStateClosure() {
   function CanvasExtraState(old) {
     // Are soft masks and alpha values shapes or opacities?
     this.alphaIsShape = false;
     this.fontSize = 0;
+    this.fontSizeScale = 1;
     this.textMatrix = IDENTITY_MATRIX;
     this.fontMatrix = IDENTITY_MATRIX;
     this.leading = 0;
@@ -1482,7 +1559,8 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     },
 
     executeIRQueue: function canvasGraphicsExecuteIRQueue(codeIR,
-                                  executionStartIdx, continueCallback) {
+                                  executionStartIdx, continueCallback,
+                                  stepper) {
       var argsArray = codeIR.argsArray;
       var fnArray = codeIR.fnArray;
       var i = executionStartIdx || 0;
@@ -1501,6 +1579,11 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var slowCommands = this.slowCommands;
 
       while (true) {
+        if (stepper && i === stepper.nextBreakPoint) {
+          stepper.breakIt(i, continueCallback);
+          return i;
+        }
+
         fnName = fnArray[i];
 
         if (fnName !== 'dependency') {
@@ -1794,6 +1877,9 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       this.current.font = fontObj;
       this.current.fontSize = size;
 
+      if (fontObj.coded)
+        return; // we don't need ctx.font for Type3 fonts
+
       var name = fontObj.loadedName || 'sans-serif';
       var bold = fontObj.black ? (fontObj.bold ? 'bolder' : 'bold') :
                                  (fontObj.bold ? 'bold' : 'normal');
@@ -1801,7 +1887,16 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var italic = fontObj.italic ? 'italic' : 'normal';
       var serif = fontObj.isSerifFont ? 'serif' : 'sans-serif';
       var typeface = '"' + name + '", ' + serif;
-      var rule = italic + ' ' + bold + ' ' + size + 'px ' + typeface;
+
+      // Some font backends cannot handle fonts below certain size.
+      // Keeping the font at minimal size and using the fontSizeScale to change
+      // the current transformation matrix before the fillText/strokeText.
+      // See https://bugzilla.mozilla.org/show_bug.cgi?id=726227
+      var browserFontSize = size >= MIN_FONT_SIZE ? size : MIN_FONT_SIZE;
+      this.current.fontSizeScale = browserFontSize != MIN_FONT_SIZE ? 1.0 :
+                                   size / MIN_FONT_SIZE;
+
+      var rule = italic + ' ' + bold + ' ' + browserFontSize + 'px ' + typeface;
       this.ctx.font = rule;
     },
     setTextRenderingMode: function canvasGraphicsSetTextRenderingMode(mode) {
@@ -1864,6 +1959,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var font = current.font;
       var glyphs = font.charsToGlyphs(str);
       var fontSize = current.fontSize;
+      var fontSizeScale = current.fontSizeScale;
       var charSpacing = current.charSpacing;
       var wordSpacing = current.wordSpacing;
       var textHScale = current.textHScale;
@@ -1927,10 +2023,15 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
         else
           lineWidth /= scale;
 
-        ctx.lineWidth = lineWidth;
-
         if (textSelection)
           text.geom = this.getTextGeometry();
+
+        if (fontSizeScale != 1.0) {
+          ctx.scale(fontSizeScale, fontSizeScale);
+          lineWidth /= fontSizeScale;
+        }
+
+        ctx.lineWidth = lineWidth;
 
         var x = 0;
         for (var i = 0; i < glyphsLength; ++i) {
@@ -1945,20 +2046,21 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
           var charWidth = glyph.width * fontSize * 0.001 +
               Util.sign(current.fontMatrix[0]) * charSpacing;
 
+          var scaledX = x / fontSizeScale;
           switch (textRenderingMode) {
             default: // other unsupported rendering modes
             case TextRenderingMode.FILL:
             case TextRenderingMode.FILL_ADD_TO_PATH:
-              ctx.fillText(char, x, 0);
+              ctx.fillText(char, scaledX, 0);
               break;
             case TextRenderingMode.STROKE:
             case TextRenderingMode.STROKE_ADD_TO_PATH:
-              ctx.strokeText(char, x, 0);
+              ctx.strokeText(char, scaledX, 0);
               break;
             case TextRenderingMode.FILL_STROKE:
             case TextRenderingMode.FILL_STROKE_ADD_TO_PATH:
-              ctx.fillText(char, x, 0);
-              ctx.strokeText(char, x, 0);
+              ctx.fillText(char, scaledX, 0);
+              ctx.strokeText(char, scaledX, 0);
               break;
             case TextRenderingMode.INVISIBLE:
               break;
@@ -14701,6 +14803,61 @@ var Font = (function FontClosure() {
         }
       };
 
+      function sanitizeGlyph(source, sourceStart, sourceEnd, dest, destStart) {
+        if (sourceEnd - sourceStart <= 12) {
+          // glyph with data less than 12 is invalid one
+          return 0;
+        }
+        var glyf = source.subarray(sourceStart, sourceEnd);
+        var contoursCount = (glyf[0] << 8) | glyf[1];
+        if (contoursCount & 0x8000) {
+          // complex glyph, writing as is
+          dest.set(glyf, destStart);
+          return glyf.length;
+        }
+
+        var j = 10, flagsCount = 0;
+        for (var i = 0; i < contoursCount; i++) {
+          var endPoint = (glyf[j] << 8) | glyf[j + 1];
+          flagsCount = endPoint + 1;
+          j += 2;
+        }
+        // skipping instructions
+        var instructionsLength = (glyf[j] << 8) | glyf[j + 1];
+        j += 2 + instructionsLength;
+        // validating flags
+        var coordinatesLength = 0;
+        for (var i = 0; i < flagsCount; i++) {
+          var flag = glyf[j++];
+          if (flag & 0xC0) {
+            // reserved flags must be zero, rejecting
+            return 0;
+          }
+          var xyLength = ((flag & 2) ? 1 : (flag & 16) ? 0 : 2) +
+                         ((flag & 4) ? 1 : (flag & 32) ? 0 : 2);
+          coordinatesLength += xyLength;
+          if (flag & 8) {
+            var repeat = glyf[j++];
+            i += repeat;
+            coordinatesLength += repeat * xyLength;
+          }
+        }
+        var glyphDataLength = j + coordinatesLength;
+        if (glyphDataLength > glyf.length) {
+          // not enough data for coordinates
+          return 0;
+        }
+        if (glyf.length - glyphDataLength > 3) {
+          // truncating and aligning to 4 bytes the long glyph data
+          glyphDataLength = (glyphDataLength + 3) & ~3;
+          dest.set(glyf.subarray(0, glyphDataLength), destStart);
+          return glyphDataLength;
+        }
+        // glyph data is fine
+        dest.set(glyf, destStart);
+        return glyf.length;
+      }
+
       function sanitizeGlyphLocations(loca, glyf, numGlyphs,
                                       isGlyphLocationsLong) {
         var itemSize, itemDecode, itemEncode;
@@ -14727,21 +14884,21 @@ var Font = (function FontClosure() {
           };
         }
         var locaData = loca.data;
+        // removing the invalid glyphs
+        var oldGlyfData = glyf.data;
+        var newGlyfData = new Uint8Array(oldGlyfData.length);
         var startOffset = itemDecode(locaData, 0);
-        var firstOffset = itemDecode(locaData, itemSize);
-        if (firstOffset - startOffset < 12 || startOffset > 0) {
-          // removing first glyph
-          glyf.data = glyf.data.subarray(firstOffset);
-          glyf.length -= firstOffset;
-
-          itemEncode(locaData, 0, 0);
-          var i, pos = itemSize;
-          for (i = 1; i <= numGlyphs; ++i) {
-            itemEncode(locaData, pos,
-              itemDecode(locaData, pos) - firstOffset);
-            pos += itemSize;
-          }
+        var writeOffset = 0;
+        itemEncode(locaData, 0, writeOffset);
+        for (var i = 0, j = itemSize; i < numGlyphs; i++, j += itemSize) {
+          var endOffset = itemDecode(locaData, j);
+          var newLength = sanitizeGlyph(oldGlyfData, startOffset, endOffset,
+                                        newGlyfData, writeOffset);
+          writeOffset += newLength;
+          itemEncode(locaData, j, writeOffset);
+          startOffset = endOffset;
         }
+        glyf.data = newGlyfData.subarray(0, writeOffset);
       }
 
       function readGlyphNameMap(post, properties) {
@@ -15317,6 +15474,9 @@ var Font = (function FontClosure() {
 
       var styleSheet = styleElement.sheet;
       styleSheet.insertRule(rule, styleSheet.cssRules.length);
+
+      if (PDFJS.pdfBug && FontInspector.enabled)
+        FontInspector.fontAdded(this, url);
 
       return rule;
     },
@@ -24725,6 +24885,10 @@ var Parser = (function ParserClosure() {
 
       return imageStream;
     },
+    fetchIfRef: function parserFetchIfRef(obj) {
+      // not relying on the xref.fetchIfRef -- xref might not be set
+      return isRef(obj) ? this.xref.fetch(obj) : obj;
+    },
     makeStream: function parserMakeStream(dict, cipherTransform) {
       var lexer = this.lexer;
       var stream = lexer.stream;
@@ -24734,10 +24898,7 @@ var Parser = (function ParserClosure() {
       var pos = stream.pos;
 
       // get length
-      var length = dict.get('Length');
-      var xref = this.xref;
-      if (xref)
-        length = xref.fetchIfRef(length);
+      var length = this.fetchIfRef(dict.get('Length'));
       if (!isInt(length)) {
         error('Bad ' + length + ' attribute in stream');
         length = 0;
@@ -24759,8 +24920,8 @@ var Parser = (function ParserClosure() {
       return stream;
     },
     filter: function parserFilter(stream, dict, length) {
-      var filter = dict.get('Filter', 'F');
-      var params = dict.get('DecodeParms', 'DP');
+      var filter = this.fetchIfRef(dict.get('Filter', 'F'));
+      var params = this.fetchIfRef(dict.get('DecodeParms', 'DP'));
       if (isName(filter))
         return this.makeFilter(stream, filter.name, length, params);
       if (isArray(filter)) {
