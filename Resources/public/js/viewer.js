@@ -15,6 +15,15 @@ var kMaxScale = 4.0;
 var kImageDirectory = './images/';
 var kSettingsMemory = 20;
 
+function getFileName(url) {
+  var anchor = url.indexOf('#');
+  var query = url.indexOf('?');
+  var end = Math.min(
+    anchor > 0 ? anchor : url.length,
+    query > 0 ? query : url.length);
+  return url.substring(url.lastIndexOf('/', end) + 1, end);
+}
+
 var Cache = function cacheCache(size) {
   var data = [];
   this.push = function cachePush(view) {
@@ -26,6 +35,48 @@ var Cache = function cacheCache(size) {
       data.shift().update();
   };
 };
+
+var ProgressBar = (function ProgressBarClosure() {
+
+  function clamp(v, min, max) {
+    return Math.min(Math.max(v, min), max);
+  }
+
+  function ProgressBar(id, opts) {
+
+    // Fetch the sub-elements for later
+    this.div = document.querySelector(id + ' .progress');
+
+    // Get options, with sensible defaults
+    this.height = opts.height || 100;
+    this.width = opts.width || 100;
+    this.units = opts.units || '%';
+    this.percent = opts.percent || 0;
+
+    // Initialize heights
+    this.div.style.height = this.height + this.units;
+  }
+
+  ProgressBar.prototype = {
+
+    updateBar: function ProgressBar_updateBar() {
+      var progressSize = this.width * this._percent / 100;
+
+      this.div.style.width = progressSize + this.units;
+    },
+
+    get percent() {
+      return this._percent;
+    },
+
+    set percent(val) {
+      this._percent = clamp(val, 0, 100);
+      this.updateBar();
+    }
+  };
+
+  return ProgressBar;
+})();
 
 var RenderingQueue = (function RenderingQueueClosure() {
   function RenderingQueue() {
@@ -234,6 +285,7 @@ var PDFView = {
       return;
     }
 
+    pages[val - 1].updateStats();
     currentPageNumber = val;
     var event = document.createEvent('UIEvents');
     event.initUIEvent('pagechange', false, false, window, 0);
@@ -257,7 +309,13 @@ var PDFView = {
   },
 
   open: function pdfViewOpen(url, scale) {
-    document.title = this.url = url;
+    this.url = url;
+
+    document.title = decodeURIComponent(getFileName(url)) || url;
+
+    if (!PDFView.loadingBar) {
+      PDFView.loadingBar = new ProgressBar('#loadingBar', {});
+    }
 
     var self = this;
     PDFJS.getPdf(
@@ -399,6 +457,8 @@ var PDFView = {
     var percent = Math.round(level * 100);
     var loadingIndicator = document.getElementById('loading');
     loadingIndicator.textContent = 'Loading... ' + percent + '%';
+
+    PDFView.loadingBar.percent = percent;
   },
 
   load: function pdfViewLoad(data, scale) {
@@ -413,8 +473,8 @@ var PDFView = {
     var errorWrapper = document.getElementById('errorWrapper');
     errorWrapper.setAttribute('hidden', 'true');
 
-    var loadingIndicator = document.getElementById('loading');
-    loadingIndicator.setAttribute('hidden', 'true');
+    var loadingBox = document.getElementById('loadingBox');
+    loadingBox.setAttribute('hidden', 'true');
 
     var sidebar = document.getElementById('sidebarView');
     sidebar.parentNode.scrollTop = 0;
@@ -498,6 +558,24 @@ var PDFView = {
       // Setting the default one.
       this.parseScale(kDefaultScale, true);
     }
+
+    this.metadata = null;
+    var metadata = pdf.catalog.metadata;
+    var info = this.documentInfo = pdf.info;
+    var pdfTitle;
+
+    if (metadata) {
+      this.metadata = metadata = new PDFJS.Metadata(metadata);
+
+      if (metadata.has('dc:title'))
+        pdfTitle = metadata.get('dc:title');
+    }
+
+    if (!pdfTitle && info && info['Title'])
+      pdfTitle = info['Title'];
+
+    if (pdfTitle)
+      document.title = pdfTitle + ' - ' + document.title;
   },
 
   setHash: function pdfViewSetHash(hash) {
@@ -870,7 +948,6 @@ var PageView = function pageView(container, content, id, pageWidth, pageHeight,
     // Rendering area
 
     var self = this;
-    stats.begin = Date.now();
     this.content.startRendering(ctx, function pageViewDrawCallback(error) {
       if (self.loadingIconDiv) {
         div.removeChild(self.loadingIconDiv);
@@ -880,6 +957,7 @@ var PageView = function pageView(container, content, id, pageWidth, pageHeight,
       if (error)
         PDFView.error('An error occurred while rendering the page.', error);
 
+      self.stats = content.stats;
       self.updateStats();
       if (self.onAfterDraw)
         self.onAfterDraw();
@@ -893,10 +971,10 @@ var PageView = function pageView(container, content, id, pageWidth, pageHeight,
   };
 
   this.updateStats = function pageViewUpdateStats() {
-    var t1 = stats.compile, t2 = stats.fonts, t3 = stats.render;
-    var str = 'Time to compile/fonts/render: ' +
-              (t1 - stats.begin) + '/' + (t2 - t1) + '/' + (t3 - t2) + ' ms';
-    document.getElementById('info').textContent = str;
+    if (PDFJS.pdfBug && Stats.enabled) {
+      var stats = this.stats;
+      Stats.add(this.id, stats);
+    }
   };
 };
 
@@ -1022,6 +1100,57 @@ var DocumentOutlineView = function documentOutlineView(outline) {
   }
 };
 
+// optimised CSS custom property getter/setter
+var CustomStyle = (function CustomStyleClosure() {
+
+  // As noted on: http://www.zachstronaut.com/posts/2009/02/17/
+  //              animate-css-transforms-firefox-webkit.html
+  // in some versions of IE9 it is critical that ms appear in this list
+  // before Moz
+  var prefixes = ['ms', 'Moz', 'Webkit', 'O'];
+  var _cache = { };
+
+  function CustomStyle() {
+  }
+
+  CustomStyle.getProp = function get(propName, element) {
+    // check cache only when no element is given
+    if (arguments.length == 1 && typeof _cache[propName] == 'string') {
+      return _cache[propName];
+    }
+
+    element = element || document.documentElement;
+    var style = element.style, prefixed, uPropName;
+
+    // test standard property first
+    if (typeof style[propName] == 'string') {
+      return (_cache[propName] = propName);
+    }
+
+    // capitalize
+    uPropName = propName.charAt(0).toUpperCase() + propName.slice(1);
+
+    // test vendor specific properties
+    for (var i = 0, l = prefixes.length; i < l; i++) {
+      prefixed = prefixes[i] + uPropName;
+      if (typeof style[prefixed] == 'string') {
+        return (_cache[propName] = prefixed);
+      }
+    }
+
+    //if all fails then set to undefined
+    return (_cache[propName] = 'undefined');
+  }
+
+  CustomStyle.setProp = function set(propName, element, str) {
+    var prop = this.getProp(propName);
+    if (prop != 'undefined')
+      element.style[prop] = str;
+  }
+
+  return CustomStyle;
+})();
+
 var TextLayerBuilder = function textLayerBuilder(textLayerDiv) {
   this.textLayerDiv = textLayerDiv;
 
@@ -1130,29 +1259,17 @@ window.addEventListener('load', function webViewerLoad(evt) {
   if ('disableTextLayer' in hashParams)
     PDFJS.disableTextLayer = (hashParams['disableTextLayer'] === 'true');
 
-  if ('pdfBug' in hashParams) {
+  if ('pdfBug' in hashParams &&
+      (!PDFJS.isFirefoxExtension || FirefoxCom.request('pdfBugEnabled'))) {
     PDFJS.pdfBug = true;
     var pdfBug = hashParams['pdfBug'];
-    var all = false, enabled = [];
-    if (pdfBug === 'all')
-      all = true;
-    else
-      enabled = pdfBug.split(',');
-    var debugTools = PDFBug.tools;
-    for (var i = 0; i < debugTools.length; ++i) {
-      var tool = debugTools[i];
-      if (all || enabled.indexOf(tool.id) !== -1)
-        tool.enabled = true;
-    }
+    var enabled = pdfBug.split(',');
+    PDFBug.enable(enabled);
     PDFBug.init();
   }
 
   var sidebarScrollView = document.getElementById('sidebarScrollView');
   sidebarScrollView.addEventListener('scroll', updateThumbViewArea, true);
-}, true);
-
-window.addEventListener('unload', function webViewerUnload(evt) {
-  window.scrollTo(0, 0);
 }, true);
 
 /**
