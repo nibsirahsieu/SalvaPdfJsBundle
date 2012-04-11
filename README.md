@@ -1,6 +1,8 @@
 SalvaPdfJsBundle
 ================
 
+[![Build Status](https://secure.travis-ci.org/nibsirahsieu/SalvaPdfJsBundle.png?branch=master)](http://travis-ci.org/nibsirahsieu/SalvaPdfJsBundle)
+
 This bundle provides a simple integration of the "[PDF.JS library](https://github.com/mozilla/pdf.js)" from mozilla into Symfony2.
 
 ## Installation
