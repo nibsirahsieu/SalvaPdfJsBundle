@@ -7,7 +7,7 @@ var PDFJS = {};
   // Use strict in our context only - users might not want it
   'use strict';
 
-  PDFJS.build = '2d08ae9';
+  PDFJS.build = '0cb6d62';
 
   // Files are inserted below - see Makefile
   /* PDFJSSCRIPT_INCLUDE_ALL */
@@ -145,20 +145,18 @@ var Page = (function PageClosure() {
     },
 
     getOperatorList: function Page_getOperatorList(handler, dependency) {
-      if (this.operatorList) {
-        // content was compiled
-        return this.operatorList;
-      }
-
       var xref = this.xref;
       var content = this.content;
       var resources = this.resources;
       if (isArray(content)) {
         // fetching items
+        var streams = [];
         var i, n = content.length;
         for (i = 0; i < n; ++i)
-          content[i] = xref.fetchIfRef(content[i]);
-        content = new StreamsSequenceStream(content);
+          streams.push(xref.fetchIfRef(content[i]));
+        content = new StreamsSequenceStream(streams);
+      } else if (isStream(content)) {
+        content.reset();
       } else if (!content) {
         // replacing non-existent page content with empty one
         content = new Stream(new Uint8Array(0));
@@ -167,8 +165,7 @@ var Page = (function PageClosure() {
       var pe = this.pe = new PartialEvaluator(
                                 xref, handler, 'p' + this.pageNumber + '_');
 
-      this.operatorList = pe.getOperatorList(content, resources, dependency);
-      return this.operatorList;
+      return pe.getOperatorList(content, resources, dependency);
     },
 
     getLinks: function Page_getLinks() {
@@ -299,7 +296,8 @@ var Page = (function PageClosure() {
             var title = annotation.get('T');
             item.content = stringToPDFString(content || '');
             item.title = stringToPDFString(title || '');
-            item.name = annotation.get('Name').name;
+            item.name = !annotation.has('Name') ? 'Note' :
+              annotation.get('Name').name;
             break;
           default:
             TODO('unimplemented annotation type: ' + subtype.name);
@@ -1184,6 +1182,7 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
     this.stats = new StatTimer();
     this.stats.enabled = !!globalScope.PDFJS.enableStats;
     this.objs = transport.objs;
+    this.renderInProgress = false;
   }
   PDFPageProxy.prototype = {
     /**
@@ -1249,6 +1248,8 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
      * rendering.
      */
     render: function(params) {
+      this.renderInProgress = true;
+
       var promise = new Promise();
       var stats = this.stats;
       stats.time('Overall');
@@ -1256,6 +1257,7 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
       // requested before. Make the request and create the promise.
       if (!this.displayReadyPromise) {
         this.displayReadyPromise = new Promise();
+        this.destroyed = false;
 
         this.stats.time('Page Request');
         this.transport.messageHandler.send('RenderPageRequest', {
@@ -1263,7 +1265,14 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
         });
       }
 
+      var self = this;
       function complete(error) {
+        self.renderInProgress = false;
+        if (self.destroyed) {
+          delete self.operatorList;
+          delete self.displayReadyPromise;
+        }
+
         if (error)
           promise.reject(error);
         else
@@ -1273,6 +1282,11 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
       // Once the operatorList and fonts are loaded, do the actual rendering.
       this.displayReadyPromise.then(
         function pageDisplayReadyPromise() {
+          if (self.destroyed) {
+            complete();
+            return;
+          }
+
           var gfx = new CanvasGraphics(params.canvasContext,
             this.objs, params.textLayer);
           try {
@@ -1356,7 +1370,6 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
           gfx.executeOperatorList(operatorList, startIdx, next, stepper);
         if (startIdx == length) {
           gfx.endDrawing();
-          delete this.operatorList;
           stats.timeEnd('Rendering');
           stats.timeEnd('Overall');
           if (callback) callback();
@@ -1384,6 +1397,17 @@ var PDFPageProxy = (function PDFPageProxyClosure() {
       };
       promise.resolve(operationList);
       return promise;
+    },
+    /**
+     * Destroys resources allocated by the page.
+     */
+    destroy: function() {
+      this.destroyed = true;
+
+      if (!this.renderInProgress) {
+        delete this.operatorList;
+        delete this.displayReadyPromise;
+      }
     }
   };
   return PDFPageProxy;
@@ -1514,6 +1538,8 @@ var WorkerTransport = (function WorkerTransportClosure() {
       messageHandler.on('obj', function transportObj(data) {
         var id = data[0];
         var type = data[1];
+        if (this.objs.hasData(id))
+          return;
 
         switch (type) {
           case 'JpegStream':
@@ -4507,7 +4533,10 @@ var PostScriptLexer = (function PostScriptLexerClosure() {
       // operator
       var str = ch.toLowerCase();
       while (true) {
-        ch = stream.lookChar().toLowerCase();
+        ch = stream.lookChar();
+        if (ch === null)
+          break;
+        ch = ch.toLowerCase();
         if (ch >= 'a' && ch <= 'z')
           str += ch;
         else
@@ -12864,13 +12893,14 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
 
         font = xref.fetchIfRef(font) || fontRes.get(fontName);
         assertWellFormed(isDict(font));
+        ++self.objIdCounter;
         if (!font.translated) {
           font.translated = self.translateFont(font, xref, resources,
                                                dependency);
           if (font.translated) {
             // keep track of each font we translated so the caller can
             // load them asynchronously before calling display on a page
-            loadedName = 'font_' + uniquePrefix + (++self.objIdCounter);
+            loadedName = 'font_' + uniquePrefix + self.objIdCounter;
             font.translated.properties.loadedName = loadedName;
             font.loadedName = loadedName;
 
@@ -13191,7 +13221,7 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
       var toUnicode = dict.get('ToUnicode') ||
         baseDict.get('ToUnicode');
       if (toUnicode)
-        properties.toUnicode = this.readToUnicode(toUnicode, xref);
+        properties.toUnicode = this.readToUnicode(toUnicode, xref, properties);
 
       if (properties.composite) {
         // CIDSystemInfo helps to match CID to glyphs
@@ -13247,7 +13277,8 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
       properties.hasEncoding = hasEncoding;
     },
 
-    readToUnicode: function PartialEvaluator_readToUnicode(toUnicode, xref) {
+    readToUnicode: function PartialEvaluator_readToUnicode(toUnicode, xref,
+                                                           properties) {
       var cmapObj = toUnicode;
       var charToUnicode = [];
       if (isName(cmapObj)) {
@@ -13336,6 +13367,10 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
             }
           } else if (octet == 0x3E) {
             if (token.length) {
+              // XXX guessing chars size by checking number size in the CMap
+              if (token.length <= 2 && properties.composite)
+                properties.wideChars = false;
+
               if (token.length <= 4) {
                 // parsing hex number
                 tokens.push(parseInt(token, 16));
@@ -13553,6 +13588,7 @@ var PartialEvaluator = (function PartialEvaluatorClosure() {
         length1: length1,
         length2: length2,
         composite: composite,
+        wideChars: composite,
         fixedPitch: false,
         fontMatrix: dict.get('FontMatrix') || IDENTITY_MATRIX,
         firstChar: firstChar || 0,
@@ -14407,6 +14443,7 @@ var Font = (function FontClosure() {
     this.widths = properties.widths;
     this.defaultWidth = properties.defaultWidth;
     this.composite = properties.composite;
+    this.wideChars = properties.wideChars;
     this.hasEncoding = properties.hasEncoding;
 
     this.fontMatrix = properties.fontMatrix;
@@ -15344,6 +15381,16 @@ var Font = (function FontClosure() {
         properties.glyphNames = glyphNames;
       }
 
+      function isOS2Valid(os2Table) {
+        var data = os2Table.data;
+        // usWinAscent == 0 makes font unreadable by windows
+        var usWinAscent = (data[74] << 8) | data[75];
+        if (usWinAscent == 0)
+          return false;
+
+        return true;
+      }
+
       // Check that required tables are present
       var requiredTables = ['OS/2', 'cmap', 'head', 'hhea',
                              'hmtx', 'maxp', 'name', 'post'];
@@ -15351,7 +15398,7 @@ var Font = (function FontClosure() {
       var header = readOpenTypeHeader(font);
       var numTables = header.numTables;
 
-      var cmap, post, maxp, hhea, hmtx, vhea, vmtx, head, loca, glyf;
+      var cmap, post, maxp, hhea, hmtx, vhea, vmtx, head, loca, glyf, os2;
       var tables = [];
       for (var i = 0; i < numTables; i++) {
         var table = readTableEntry(font);
@@ -15369,6 +15416,8 @@ var Font = (function FontClosure() {
             hmtx = table;
           else if (table.tag == 'head')
             head = table;
+          else if (table.tag == 'OS/2')
+            os2 = table;
 
           requiredTables.splice(index, 1);
         } else {
@@ -15384,7 +15433,7 @@ var Font = (function FontClosure() {
         tables.push(table);
       }
 
-      var numTables = header.numTables + requiredTables.length;
+      var numTables = tables.length + requiredTables.length;
 
       // header and new offsets. Table entry information is appended to the
       // end of file. The virtualOffset represents where to put the actual
@@ -15398,21 +15447,10 @@ var Font = (function FontClosure() {
       // of missing tables
       createOpenTypeHeader(header.version, ttf, numTables);
 
-      if (requiredTables.indexOf('OS/2') != -1) {
-        // extract some more font properties from the OpenType head and
-        // hhea tables; yMin and descent value are always negative
-        var override = {
-          unitsPerEm: int16([head.data[18], head.data[19]]),
-          yMax: int16([head.data[42], head.data[43]]),
-          yMin: int16([head.data[38], head.data[39]]) - 0x10000,
-          ascent: int16([hhea.data[4], hhea.data[5]]),
-          descent: int16([hhea.data[6], hhea.data[7]]) - 0x10000
-        };
-
-        tables.push({
-          tag: 'OS/2',
-          data: stringToArray(createOS2Table(properties, null, override))
-        });
+      // Invalid OS/2 can break the font for the Windows
+      if (os2 && !isOS2Valid(os2)) {
+        tables.splice(tables.indexOf(os2), 1);
+        os2 = null;
       }
 
       // Ensure the [h/v]mtx tables contains the advance width and
@@ -15692,6 +15730,23 @@ var Font = (function FontClosure() {
         unicodeIsEnabled[glyphs[i].unicode] = true;
       }
       this.unicodeIsEnabled = unicodeIsEnabled;
+
+      if (!os2) {
+        // extract some more font properties from the OpenType head and
+        // hhea tables; yMin and descent value are always negative
+        var override = {
+          unitsPerEm: int16([head.data[18], head.data[19]]),
+          yMax: int16([head.data[42], head.data[43]]),
+          yMin: int16([head.data[38], head.data[39]]) - 0x10000,
+          ascent: int16([hhea.data[4], hhea.data[5]]),
+          descent: int16([hhea.data[6], hhea.data[7]]) - 0x10000
+        };
+
+        tables.push({
+          tag: 'OS/2',
+          data: stringToArray(createOS2Table(properties, glyphs, override))
+        });
+      }
 
       // Rewrite the 'post' table if needed
       if (requiredTables.indexOf('post') != -1) {
@@ -16120,7 +16175,7 @@ var Font = (function FontClosure() {
 
       glyphs = [];
 
-      if (this.composite) {
+      if (this.wideChars) {
         // composite fonts have multi-byte strings convert the string from
         // single-byte to multi-byte
         // XXX assuming CIDFonts are two-byte - later need to extract the
@@ -26065,8 +26120,11 @@ var Parser = (function ParserClosure() {
       if (name == 'CCITTFaxDecode' || name == 'CCF') {
         return new CCITTFaxStream(stream, params);
       }
-      if (name == 'RunLengthDecode') {
+      if (name == 'RunLengthDecode' || name == 'RL') {
         return new RunLengthStream(stream);
+      }
+      if (name == 'JBIG2Decode') {
+        error('JBIG2 image format is not currently supprted.');
       }
       warn('filter "' + name + '" not supported yet');
       return stream;
@@ -32489,8 +32547,28 @@ var bidi = PDFJS.bidi = (function bidiClosure() {
 'use strict';
 
 var Metadata = PDFJS.Metadata = (function MetadataClosure() {
+  function fixMetadata(meta) {
+    return meta.replace(/>\\376\\377([^<]+)/g, function(all, codes) {
+      var bytes = codes.replace(/\\([0-3])([0-7])([0-7])/g,
+                                function(code, d1, d2, d3) {
+        return String.fromCharCode(d1 * 64 + d2 * 8 + d3 * 1);
+      });
+      var chars = '';
+      for (var i = 0; i < bytes.length; i += 2) {
+        var code = bytes.charCodeAt(i) * 256 + bytes.charCodeAt(i + 1);
+        chars += code >= 32 && code < 127 && code != 60 && code != 62 &&
+          code != 38 && false ? String.fromCharCode(code) :
+          '&#x' + (0x10000 + code).toString(16).substring(1) + ';';
+      }
+      return '>' + chars;
+    });
+  }
+
   function Metadata(meta) {
     if (typeof meta === 'string') {
+      // Ghostscript produces invalid metadata
+      meta = fixMetadata(meta);
+
       var parser = new DOMParser();
       meta = parser.parseFromString(meta, 'application/xml');
     } else if (!(meta instanceof Document)) {
