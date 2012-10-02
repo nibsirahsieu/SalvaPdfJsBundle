@@ -1,0 +1,22 @@
+{
+    "name": "salva/pdfjs-bundle",
+    "type": "symfony-bundle",
+    "description": "This bundle provides a simple integration of pdfjs from mozilla into Symfony2.",
+    "keywords": ["pdfjs"],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Nibsirahsieu",
+            "email": "nibsirahsieu@gmail.com"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": ">=5.3.2",
+        "symfony/framework-bundle": ">=2.0,<2.2-dev"
+    },
+    "autoload": {
+        "psr-0": { "Salva\\PdfJsBundle": "" }
+    },
+    "target-dir": "Salva/PdfJsBundle"
+}
