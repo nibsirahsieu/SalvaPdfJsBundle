@@ -5,12 +5,14 @@ SalvaPdfJsBundle
 
 This bundle provides a simple integration of the "[PDF.JS library](https://github.com/mozilla/pdf.js)" from mozilla into Symfony2.
 
-## Installation
+Installation
+============
 
-### Step 1: Installation using the `bin/vendors.php` method
+### 1) Download SalvaPdfJsBundle
 
-If you're using the `bin/vendors.php` method to manage your vendor libraries,
-add the following lines to the `deps` file at the root of your project file:
+**Using the vendors script**
+
+### Add the following lines to the `deps` file at the root of your project file:
 
 ```
 [SalvaPdfJsBundle]
@@ -24,7 +26,15 @@ Next, update your vendors by running:
 $ ./bin/vendors install
 ```
 
-### Step2: Configure the autoloader
+**Using composer**
+
+Tell composer to download the bundle by running the command:
+
+``` bash
+$ php composer.phar require salva/pdfjs-bundle:dev-master
+```
+
+### 2) Configure the autoloader (no needed for composer)
 
 Add the following entry to your autoloader:
 
@@ -39,7 +49,7 @@ $loader->registerNamespaces(array(
 ));
 ```
 
-### Step3: Enable the bundle
+### 3) Enable the bundle
 
 Finally, enable the bundle in the kernel:
 
