@@ -12,7 +12,7 @@ Installation
 
 **Using the vendors script**
 
-### Add the following lines to the `deps` file at the root of your project file:
+Add the following lines to the `deps` file at the root of your project file:
 
 ```
 [SalvaPdfJsBundle]
