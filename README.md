@@ -31,7 +31,7 @@ $ ./bin/vendors install
 Tell composer to download the bundle by running the command:
 
 ``` bash
-$ php composer.phar require salva/pdfjs-bundle:dev-master
+$ php composer.phar require salva/pdfjs-bundle:1.0.*@dev
 ```
 
 ### 2) Configure the autoloader (no needed for composer)
