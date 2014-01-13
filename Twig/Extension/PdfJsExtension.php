@@ -2,6 +2,9 @@
 
 namespace Salva\PdfJsBundle\Twig\Extension;
 
+use Twig_Extension,
+    Twig_Function_Method;
+
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Salva\PdfJsBundle\Controller\Controller;
 
@@ -10,16 +13,6 @@ use Salva\PdfJsBundle\Controller\Controller;
  */
 class PdfJsExtension extends \Twig_Extension
 {
-    /**
-     * Returns the name of the extension.
-     *
-     * @return string The extension name
-     */
-    public function getName()
-    {
-        return 'pdfjs';
-    }
-
     /**
      * @var ContainerInterface $container The Symfony2 DIC.
      */
@@ -43,6 +36,16 @@ class PdfJsExtension extends \Twig_Extension
     public function getContainer()
     {
         return $this->container;
+    }
+
+    /**
+     * Returns the name of the extension.
+     *
+     * @return string The extension name
+     */
+    public function getName()
+    {
+        return 'pdfjs';
     }
 
     /**
