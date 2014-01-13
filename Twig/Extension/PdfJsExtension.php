@@ -63,6 +63,8 @@ class PdfJsExtension extends \Twig_Extension
      */
     public function pdfJsRender($file)
     {
-        return Controller::renderPdf($file);
+        $controller = new Controller($this->getContainer());
+        
+        return $controller->renderPdf($file);
     }
 }
