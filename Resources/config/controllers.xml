@@ -2,12 +2,21 @@
 <container xmlns="http://symfony.com/schema/dic/services"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://symfony.com/schema/dic/services http://symfony.com/schema/dic/services/services-1.0.xsd">
+
     <parameters>
         <parameter key="salva_pdf_js.controller.class">Salva\PdfJsBundle\Controller\Controller</parameter>
+        <parameter key="salva_pdf_js.twig.extension.pdfjs.class">Salva\PdfJsBundle\Twig\Extension\PdfJsExtension</parameter>
     </parameters>
+
     <services>
         <service id="salva_pdf_js.controller" class="%salva_pdf_js.controller.class%">
             <argument type="service" id="service_container" />
         </service>
+
+        <service id="salva_pdf_js.twig.extension.pdfjs" class="%salva_pdf_js.twig.extension.pdfjs.class%">
+            <argument type="service" id="service_container" />
+            <tag name="twig.extension" />
+        </service>
     </services>
+
 </container>
